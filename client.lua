@@ -31,8 +31,8 @@ end
 CreateThread(function()
     DetectFramework()
     print('^4==================================================================^7')
-    print('^2[D87 Speedometer]^7 Inicializado por ^3Drako87/Dracatt^7 con éxito.')
-    print(('^2[D87 Speedometer]^7 Framework activo detectado de forma modular: ^5%s^7'):format(CurrentFramework))
+    print('^2[d87-speedometer]^7 Inicializado con éxito.')
+    print(('^2[d87-speedometer]^7 Framework activo detectado: ^5%s^7'):format(CurrentFramework))
     print('^4==================================================================^7')
 end)
 
