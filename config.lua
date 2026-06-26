@@ -2,7 +2,7 @@ Config = {}
 
 -- SELECCIÓN DE FRAMEWORK
 Config.Framework = 'auto'  -- Opciones: 'auto' (detecta solo), 'qbox', 'qb-core', 'esx'
-Config.GitHubRepo = 'https://github.com'
+Config.GitHubRepo = 'https://github.com/drako87/d87_speedometer'
 
 -- CONFIGURACIÓN DE POSICIÓN Y TAMAÑO VISUAL
 Config.Size = 1.0          -- Escala general del HUD (1.0 = Original, 0.8 = Más pequeño, 1.2 = Más grande)
