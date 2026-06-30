@@ -1,219 +1,159 @@
-local CurrentFramework = nil
-local inVehicle = false
-local seatbeltOn = false
-local isBike = false
-local cruiseOn = false
-local cruiseSpeed = 0.0
+isHudVisible = false
+engineStatus = true
+cruiseStatus = false
+cruiseSpeed = 0.0
 
--- Variables internas para la mitigación del daño del motor
-local lastVehicle = 0
-local lastEngineHealth = 1000.0
+-- Variables compartidas globales (Sin el 'local' para que conecte con features.lua)
+lastVehicleCoords = nil
+lastEngineState = nil 
 
--- Función interna para detectar de forma automática el Framework activo
-local function DetectFramework()
-    if Config.Framework ~= 'auto' then
-        CurrentFramework = Config.Framework
-        return
-    end
-
-    if GetResourceState('qbx_core') == 'started' then
-        CurrentFramework = 'qbox'
-    elseif GetResourceState('qb-core') == 'started' then
-        CurrentFramework = 'qb-core'
-    elseif GetResourceState('es_extended') == 'started' then
-        CurrentFramework = 'esx'
-    else
-        CurrentFramework = 'standalone'
-    end
-end
-
--- Inicialización al cargar el recurso
-CreateThread(function()
-    DetectFramework()
-    print('^2[d87-speedometer]^7 Inicializado con éxito.')
-    print(('^2[d87-speedometer]^7 Framework activo detectado: ^5%s^7'):format(CurrentFramework))
-end)
-
--- Teclado para el cinturón
-RegisterCommand('toggle_seatbelt', function()
-    if inVehicle and not isBike then
-        seatbeltOn = not seatbeltOn
-        SendNUIMessage({ action = "seatbelt", status = seatbeltOn })
-    end
-end, false)
-RegisterKeyMapping('toggle_seatbelt', 'Poner/Quitar Cinturón', 'keyboard', Config.SeatbeltKey)
-
--- Teclado para el Control de Crucero
-RegisterCommand('toggle_cruise', function()
-    if inVehicle and not isBike then
-        local ped = PlayerPedId()
-        local vehicle = GetVehiclePedIsIn(ped, false)
-        if vehicle ~= 0 and GetPedInVehicleSeat(vehicle, -1) == ped then
-            local currentSpeed = GetEntitySpeed(vehicle)
-            if currentSpeed * 3.6 > 20 then
-                cruiseOn = not cruiseOn
-                if cruiseOn then
-                    cruiseSpeed = currentSpeed
-                    SetVehicleMaxSpeed(vehicle, cruiseSpeed)
-                else
-                    SetVehicleMaxSpeed(vehicle, 0.0)
-                end
-                SendNUIMessage({ action = "cruise", status = cruiseOn })
-            end
-        end
-    end
-end, false)
-RegisterKeyMapping('toggle_cruise', 'Alternar Control de Crucero', 'keyboard', Config.CruiseKey)
-
--- Hilo de telemetría e interacciones cruzadas
+-- 🚗 BUCLE PRINCIPAL: Telemetría, Control de Crucero, Adaptación de Tipo y Odómetro
 CreateThread(function()
     while true do
-        local sleep = 1000
+        local sleep = 500
         local ped = PlayerPedId()
-        local vehicle = GetVehiclePedIsIn(ped, false)
-
-        if vehicle ~= 0 and IsPedInAnyVehicle(ped, false) then
-            local isDriver = (GetPedInVehicleSeat(vehicle, -1) == ped)
-
-            if not inVehicle then
-                inVehicle = true
-                local vehClass = GetVehicleClass(vehicle)
-                isBike = (vehClass == 8 or vehClass == 13 or vehClass == 3 or vehClass == 11)
-                
-                local hash = GetEntityModel(vehicle)
-                local modelName = GetDisplayNameFromVehicleModel(hash)
-                local vehicleLabel = GetLabelText(modelName)
-                if vehicleLabel == "NULL" then vehicleLabel = modelName end
-
-                SendNUIMessage({ 
-                    action = "show",
-                    hideSeatbelt = isBike,
-                    vehicleName = vehicleLabel,
-                    size = Config.Size,
-                    bottom = Config.BottomMargin,
-                    right = Config.RightMargin,
-                    showName = Config.ShowVehicleName,
-                    showRpm = Config.ShowRpmBar,
-                    showFuel = Config.ShowFuelBar,
-                    showEngine = Config.ShowEngineBar,
-                    showGear = Config.ShowGearBox,
-                    fuelLimit = Config.FuelAlertPercent,
-                    engineLimit = Config.EngineAlertPercent
-                })
-
-                -- Capturar salud inicial al entrar al coche
-                lastVehicle = vehicle
-                lastEngineHealth = GetVehicleEngineHealth(vehicle)
-            end
+        
+        if IsPedInAnyVehicle(ped, false) and not IsPauseMenuActive() then
+            sleep = 100
+            local veh = GetVehiclePedIsIn(ped, false)
             
-            sleep = 100 
+            if GetPedInVehicleSeat(veh, -1) == ped then
+                local rawEngineHealth = GetVehicleEngineHealth(veh)
+                local enginePct = math.floor((rawEngineHealth / 1000) * 100)
+                if enginePct < 0 then enginePct = 0 elseif enginePct > 100 then enginePct = 100 end
 
-            -- 🛡️ MITIGADOR DE COLISIONES BASADO EN EL CONFIG.LUA
-            local currentEngineHealth = GetVehicleEngineHealth(vehicle)
-            if isDriver and currentEngineHealth < lastEngineHealth then
-                local damageTaken = lastEngineHealth - currentEngineHealth
-                if damageTaken > 1.0 and currentEngineHealth > 0.0 then
-                    -- Multiplicamos el daño por el valor configurado por el usuario
-                    local mitigatedHealth = lastEngineHealth - (damageTaken * Config.VehicleDamageMultiplier)
-                    SetVehicleEngineHealth(vehicle, mitigatedHealth)
-                    currentEngineHealth = mitigatedHealth
-                end
-            end
-            lastEngineHealth = currentEngineHealth
-
-            -- 1. Velocidad y Marchas Universales
-            local speedMultiplier = Config.UseMPH and 2.236936 or 3.6
-            local speedUnit = Config.UseMPH and "MPH" or "KM/H"
-            local speed = math.floor(GetEntitySpeed(vehicle) * speedMultiplier)
-            
-            local gear = GetVehicleCurrentGear(vehicle)
-            if gear == 0 and speed > 0 then gear = "R" end
-            if gear == 0 and speed == 0 then gear = "N" end
-            local rpmPct = math.floor((GetVehicleCurrentRpm(vehicle) or 0.0) * 100)
-
-            if cruiseOn and IsControlPressed(0, 72) then
-                cruiseOn = false
-                SetVehicleMaxSpeed(vehicle, 0.0)
-                SendNUIMessage({ action = "cruise", status = false })
-            end
-
-            -- 2. Luces
-            local _, lightsOn, highBeamsOn = GetVehicleLightsState(vehicle)
-            local lightState = "off"
-            if highBeamsOn == 1 then lightState = "high" elseif lightsOn == 1 then lightState = "normal" end
-
-            -- 3. Radares Fijos
-            local nearRadar = false
-            local radarMaxSpeed = 0
-            
-            if Config.EnableRadars then
-                local coords = GetEntityCoords(ped)
-                for _, radar in ipairs(Config.Radars) do
-                    if #(coords - radar.coords) <= Config.RadarDistance then
-                        nearRadar = true
-                        radarMaxSpeed = radar.maxSpeed
-                        break
+                -- 🛠️ SOLUCIÓN AL BUCLE DE ENCENDIDO/PARPADEO: Sincronización estricta de estados
+                if enginePct > 15 then
+                    if lastEngineState ~= engineStatus then
+                        SetVehicleEngineOn(veh, engineStatus, true, true)
+                        SetVehicleUndriveable(veh, not engineStatus)
+                        lastEngineState = engineStatus
+                    end
+                else
+                    if lastEngineState ~= false then
+                        SetVehicleUndriveable(veh, true)
+                        lastEngineState = false
                     end
                 end
-            end
 
-            -- 4. Sistema Multicapa de Gasolina (Línea 164 CORREGIDA sin 'blanks')
-            local fuel = 0
-            if Config.FuelSystem == 'bazufix-fuel' or (Config.FuelSystem == 'auto' and GetResourceState('bazufix-fuel') == 'started') then
-                fuel = exports['bazufix-fuel']:GetFuel(vehicle) or 0
-            elseif Config.FuelSystem == 'ox_fuel' or (Config.FuelSystem == 'auto' and GetResourceState('ox_fuel') == 'started') then
-                fuel = exports['ox_fuel']:GetFuel(vehicle) or 0
-            elseif Config.FuelSystem == 'legacyfuel' or (Config.FuelSystem == 'auto' and GetResourceState('LegacyFuel') == 'started') then
-                fuel = exports['LegacyFuel']:GetFuel(vehicle) or 0
-            elseif Config.FuelSystem == 'qb-fuel' or (Config.FuelSystem == 'auto' and GetResourceState('qb-fuel') == 'started') then
-                fuel = exports['qb-fuel']:GetFuel(vehicle) or 0
+                -- ADAPTACIÓN DEL TIPO DE VEHÍCULO
+                local class = GetVehicleClass(veh)
+                local vehType = "car"
+                if class == 8 then vehType = "bike"
+                elseif class == 14 then vehType = "boat"
+                elseif class == 15 then vehType = "heli"
+                elseif class == 16 then vehType = "plane" end
+
+                -- CÁLCULO DEL CUENTAKILÓMETROS (ODÓMETRO)
+                local currentCoords = GetEntityCoords(veh)
+                if lastVehicleCoords then
+                    local dist = #(currentCoords - lastVehicleCoords)
+                    if dist > 0.0 and dist < 100.0 then
+                        local conversion = Config.UseMPH and 0.000621371 or 0.001
+                        local currentOdo = Entity(veh).state.odometer or 0.0
+                        Entity(veh).state:set('odometer', currentOdo + (dist * conversion), true)
+                    end
+                end
+                lastVehicleCoords = currentCoords
+
+                local totalOdometer = math.floor(Entity(veh).state.odometer or 0.0)
+
+                -- Control de Crucero Activo
+                if cruiseStatus and vehType ~= "plane" and vehType ~= "heli" and vehType ~= "boat" then
+                    local currentSpeed = GetEntitySpeed(veh)
+                    if IsControlPressed(0, 72) or (currentSpeed < (cruiseSpeed - 3.0)) then
+                        cruiseStatus = false
+                        SendNUIMessage({ action = "cruise", status = false })
+                        lib.notify({title = 'Crucero', description = 'Control de crucero desactivado.', type = 'error'})
+                    else
+                        SetVehicleForwardSpeed(veh, cruiseSpeed)
+                    end
+                end
+
+                -- Conversión de velocidades dinámicas
+                local speedMultiplier = Config.UseMPH and 2.236936 or 3.6
+                local speedUnit = Config.UseMPH and "MPH" or "KM/H"
+                local speedHUD = math.floor(GetEntitySpeed(veh) * speedMultiplier)
+
+                local rpm = 0
+                -- Si el juego reporta que el motor está realmente apagado (por un script de llaves), forzamos rpm a 0
+                if GetIsVehicleEngineRunning(veh) and engineStatus and enginePct > 15 then
+                    rpm = math.floor(GetVehicleCurrentRpm(veh) * 100)
+                else
+                    rpm = 0
+                end
+                
+                local gear = GetVehicleCurrentGear(veh)
+                local gearStr = tostring(gear)
+                if gear == 0 then gearStr = "R" end
+                
+                local fuel = GetVehicleFuel(veh)
+
+                local _, lightsOn, highBeamsOn = GetVehicleLightsState(veh)
+                local lightStatus = "off"
+                if highBeamsOn == 1 then lightStatus = "high" elseif lightsOn == 1 then lightStatus = "normal" end
+
+                -- CORREGIDO: Definición nativa del nombre del modelo para evitar caídas de HUD
+                local modelName = GetLabelText(GetDisplayNameFromVehicleModel(GetEntityModel(veh)))
+                if modelName == "NULL" then modelName = GetDisplayNameFromVehicleModel(GetEntityModel(veh)) end
+
+                -- 🛠️ SOLUCIÓN AL BLOQUEO DE MOTOS: Ajustamos de forma nativa para que sea un cierre virtual estable
+                local isLocked = GetVehicleDoorLockStatus(veh) == 2 or GetVehicleDoorsLockedForPlayer(veh, ped)
+
+                if not isHudVisible then
+                    isHudVisible = true
+                    SendNUIMessage({ 
+                        action = "show",
+                        size = Config.Size or 1.0,
+                        bottom = Config.BottomMargin or 40,
+                        right = Config.RightMargin or 40,
+                        showName = Config.ShowVehicleName,
+                        showRpm = Config.ShowRpmBar,
+                        showFuel = Config.ShowFuelBar,
+                        showEngine = Config.ShowEngineBar,
+                        showGear = Config.ShowGearBox,
+                        vehicleName = modelName,
+                        hideSeatbelt = false, -- Control reactivo en el ui.js
+                        fuelLimit = Config.FuelAlertPercent,
+                        engineLimit = Config.EngineAlertPercent
+                    })
+                    SendNUIMessage({ action = "seatbelt", status = seatbeltStatus })
+                    SendNUIMessage({ action = "cruise", status = cruiseStatus })
+                end
+
+                SendNUIMessage({
+                    action = "update",
+                    speed = speedHUD,
+                    gear = gearStr,
+                    unit = speedUnit,
+                    rpm = rpm,
+                    fuel = fuel,
+                    engine = enginePct,
+                    locked = isLocked,
+                    lights = lightStatus,
+                    radar = activeRadar,
+                    radarSpeed = activeRadarSpeed,
+                    vehType = vehType,       
+                    odo = totalOdometer      
+                })
             else
-                fuel = GetVehicleFuelLevel(vehicle) or 100
+                if isHudVisible then ResetHudStates() end
             end
-            fuel = math.floor(fuel)
-
-            -- 5. Daño de Motor en Porcentaje
-            local enginePct = math.floor((currentEngineHealth / 1000) * 100)
-
-            -- 6. Cierre Centralizado
-            local isLocked = false
-            if CurrentFramework == 'qbox' or CurrentFramework == 'qb-core' then
-                local lockStatus = GetVehicleDoorLockStatus(vehicle)
-                isLocked = (lockStatus == 2 or lockStatus == 4 or lockStatus == 10)
-            elseif CurrentFramework == 'esx' then
-                local lockStatus = GetVehicleDoorLockStatus(vehicle)
-                isLocked = (lockStatus == 2)
-            else
-                local lockStatus = GetVehicleDoorLockStatus(vehicle)
-                isLocked = (lockStatus == 2 or lockStatus == 4)
-            end
-
-            SendNUIMessage({
-                action = "update",
-                speed = speed,
-                gear = gear,
-                fuel = fuel,
-                engine = enginePct,
-                locked = isLocked,
-                rpm = rpmPct,
-                unit = speedUnit,
-                lights = lightState,
-                radar = nearRadar,
-                radarSpeed = radarMaxSpeed
-            })
         else
-            if inVehicle then
-                inVehicle = false
-                seatbeltOn = false
-                isBike = false
-                cruiseOn = false
-                lastVehicle = 0
-                lastEngineHealth = 1000.0
-                SendNUIMessage({ action = "hide" })
-                SendNUIMessage({ action = "seatbelt", status = false })
-                SendNUIMessage({ action = "cruise", status = false })
-            end
+            if isHudVisible then ResetHudStates() end
+            engineStatus = true
+            lastVehicleCoords = nil
+            lastEngineState = nil
+            sleep = 1000
         end
         Wait(sleep)
     end
 end)
+
+function ResetHudStates()
+    isHudVisible = false
+    seatbeltStatus = false
+    cruiseStatus = false
+    lastEngineState = nil
+    SendNUIMessage({ action = "hide" })
+end
